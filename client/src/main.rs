@@ -17,7 +17,8 @@ async fn main() -> Result<()> {
 
     let write_handler = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            if writer.write_all(message.as_bytes()).await.is_err() {
+            let combined_message: String = format!("{}: {}", username, message);
+            if writer.write_all(combined_message.as_bytes()).await.is_err() {
                 break;
             }
         }
@@ -30,6 +31,7 @@ async fn main() -> Result<()> {
         loop {
             buffer.clear();
             if stdin.read_line(&mut buffer).await.is_ok() {
+                print!("\x1B[1A\x1B[2K");
                 if buffer.trim().eq("/quit") {
                     break;
                 }
@@ -49,7 +51,7 @@ async fn main() -> Result<()> {
                 break;
             }
             Ok(_) => {
-                println!("{}", line);
+                print!("{}", line);
             }
             Err(e) => {
                 eprintln!("Error reading from server: {}", e);

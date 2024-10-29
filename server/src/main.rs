@@ -29,8 +29,11 @@ async fn manage_connection(mut socket: TcpStream) -> Result<()> {
             println!("Client has disconnected");
             return Ok(());
         }
-
-        socket.write_all(&buffer[..bytes]).await?;
+        let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
+        let mut message: Vec<u8> = Vec::new();
+        message.extend(format!("[{}]", timestamp).as_bytes());
+        message.extend(&buffer[..bytes]);
+        socket.write_all(&message).await?;
     }
 }
 
