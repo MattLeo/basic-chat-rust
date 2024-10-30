@@ -3,7 +3,7 @@ An open-source chat service built from Rust and employing a modern and clean UI.
 
 ## Feature List Roadmap
 #### Key Features
-[x] Instant chat relay to all connected users<b>
+[x] Instant chat relay to all connected users<br>
 [] Channels / Rooms
 [] modern UI (possibly web-based display)
 [] cross-platform support for all desktop and mobile devices (or at least most)
