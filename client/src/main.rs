@@ -2,12 +2,22 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use anyhow::Result;
 use tokio::sync::mpsc;
+use chrono::{DateTime, Local, Utc};
+use serde::{Serialize, Deserialize};
+use serde_json;
+
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MessageData {
+   timestamp: DateTime<Utc>,
+   username: String,
+   message: Vec<u8>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let ip = "127.0.0.1";
     let port = "9090";
-    let username = "TheLeo";
 
     let stream = TcpStream::connect(format!("{}:{}", ip, port)).await?;
     let (reader, mut writer) = stream.into_split();
@@ -17,8 +27,7 @@ async fn main() -> Result<()> {
 
     let write_handler = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            let combined_message: String = format!("{}: {}", username, message);
-            if writer.write_all(combined_message.as_bytes()).await.is_err() {
+            if writer.write_all(message.as_bytes()).await.is_err() {
                 break;
             }
         }
@@ -51,7 +60,9 @@ async fn main() -> Result<()> {
                 break;
             }
             Ok(_) => {
-                print!("{}", line);
+                let json_data: MessageData = serde_json::from_str(&line).unwrap();
+                let local_time = json_data.timestamp.with_timezone(&Local).format("%H:%M:%S");
+                print!("[{}]{}: {}", local_time, json_data.username, String::from_utf8_lossy(&json_data.message));
             }
             Err(e) => {
                 eprintln!("Error reading from server: {}", e);
