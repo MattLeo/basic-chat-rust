@@ -137,6 +137,7 @@ async fn auth_user(user_db: Arc<Db>, shared_socket: Arc<Mutex<TcpStream>>) -> Re
     {
         let mut locked_socket = shared_socket.lock().await;
         locked_socket.write_all(b"Please enter username:\n").await?;
+        locked_socket.flush().await?;
     }
     let username = {
         let bytes = {
