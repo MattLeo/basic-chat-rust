@@ -75,6 +75,7 @@ async fn manage_connection(
         let mut locked_socket = shared_socket.lock().await;
         locked_socket.write_all(format!("Joining channel: {}...\n", current_channel).as_bytes()).await?;
     };
+    add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
     let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
 
     loop {
