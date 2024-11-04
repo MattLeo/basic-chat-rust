@@ -119,7 +119,7 @@ async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, _channel_db: Arc
                 username: user.username.clone(),
                 message: input.as_bytes().to_vec(),
             };
-            let json_data = serde_json::to_string(&message_data)? + "\n";
+            let json_data = format!("{}{}{}", "JSON:" ,serde_json::to_string(&message_data)?, "\n");
             let mut locked_socket = shared_socket.lock().await;
             locked_socket.write_all(json_data.as_bytes()).await?;
         }

@@ -60,14 +60,14 @@ async fn main() -> Result<()> {
                 break;
             }
             Ok(_) => {
-                match serde_json::from_str::<MessageData>(&line) {
-                    Ok(json_data) => {
+                //println!("Raw data received from server: {:?}", line);
+                if line.starts_with("JSON:") {
+                    if let Ok(json_data) = serde_json::from_str::<MessageData>(&line[5..]) {
                         let local_time = json_data.timestamp.with_timezone(&Local).format("%H:%M:%S");
                         print!("[{}]{}: {}", local_time, json_data.username, String::from_utf8_lossy(&json_data.message));
                     }
-                    Err(_) => {
-                        print!("{}", line.trim());
-                    }
+                } else {
+                    println!("{}", line.trim());
                 }
             }
             Err(e) => {
