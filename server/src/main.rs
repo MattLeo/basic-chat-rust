@@ -1,11 +1,12 @@
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader, AsyncBufReadExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use sled::Db;
 use std::sync::Arc;
+use std::collections::HashMap;
 use uuid::Uuid;
 use bcrypt::{hash, verify, DEFAULT_COST};
 
@@ -25,6 +26,8 @@ struct UserAccount {
     server_role: String,
 }
 
+type ChannelMap = Arc<RwLock<HashMap<String, Vec<Arc<Mutex<TcpStream>>>>>>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let ip = "127.0.0.1";
@@ -32,6 +35,7 @@ async fn main() -> Result<()> {
     println!("Initializing internal DBs..");
     let user_db = open_db("user_db")?;
     let channel_db = open_db("channel_db")?;
+    let channel_map: ChannelMap = Arc::new(RwLock::new(HashMap::new()));
     let listener = TcpListener::bind(format!("{}:{}", ip, port)).await.expect("Failed to bind to address");
     println!("Server listening on {}:{}", ip, port);
 
@@ -47,15 +51,21 @@ async fn main() -> Result<()> {
         println!("New connection from: {}", addr);
         let user_db = Arc::clone(&user_db);
         let channel_db = Arc::clone(&channel_db);
+        let channel_map = Arc::clone(&channel_map);
         tokio::spawn(async move {
-            if let Err(e) = manage_connection(socket, user_db, channel_db).await {
+            if let Err(e) = manage_connection(socket, user_db, channel_db, channel_map).await {
                 eprint!("Connection error received: {}", e);
             }
         });
     }
 }
 
-async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, channel_db: Arc<Db>) -> Result<()> {
+async fn manage_connection(
+        socket: TcpStream, 
+        user_db: Arc<Db>, 
+        channel_db: Arc<Db>, 
+        channel_map: ChannelMap,
+    ) -> Result<()> {
     let mut buffer = [0u8;1024];
     let shared_socket = Arc::new(Mutex::new(socket));
     
@@ -86,10 +96,13 @@ async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, channel_db: Arc<
             match command {
                 "/join" => {
                     if let Some(channel_name) = argument {
+                        remove_from_channel(&current_channel, &shared_socket, &channel_map).await;
                         current_channel = channel_name.to_string();
                         let response = format!("Joined channel: {}\n", current_channel);
+                        add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
                         let mut locked_socket = shared_socket.lock().await;
                         locked_socket.write_all(response.as_bytes()).await?;
+                        let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
                     } else {
                         let error = "Usage: /join <channel>\n";
                         let mut locked_socket = shared_socket.lock().await;
@@ -103,9 +116,12 @@ async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, channel_db: Arc<
                         locked_socket.write_all(response.as_bytes()).await?;
                     } else {
                         let response = format!("You have left {}. Joining general channel..", current_channel);
+                        remove_from_channel(&current_channel, &shared_socket, &channel_map).await;
                         current_channel = "general".to_string();
+                        add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
                         let mut locked_socket = shared_socket.lock().await;
                         locked_socket.write_all(response.as_bytes()).await?;
+                        let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
                     }
                 }
                 _=> {
@@ -121,14 +137,12 @@ async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, channel_db: Arc<
                 username: user.username.clone(),
                 message: input.as_bytes().to_vec(),
             };
+
+            broadcast_message(&current_channel, &message_data, &channel_map).await;
             let serialized_message = serde_json::to_vec(&message_data)?;
             let message_key = format!("{}:{}:{}", current_channel, timestamp, user.uuid.clone());
             channel_db.insert(message_key, serialized_message)?;
             let _ = channel_db.flush()?;
-
-            let json_data = format!("{}{}{}", "JSON:" ,serde_json::to_string(&message_data)?, "\n");
-            let mut locked_socket = shared_socket.lock().await;
-            locked_socket.write_all(json_data.as_bytes()).await?;
         }
     }
 }
@@ -305,7 +319,31 @@ async fn display_channel_history(current_channel: String, channel_db: Arc<Db>, s
         let mut locked_socket = shared_socket.lock().await;
         locked_socket.write_all(json_data.as_bytes()).await?;
     }
-    
+
     Ok(())
 }
+
+async fn add_to_channel(current_channel: String, client: Arc<Mutex<TcpStream>>, channel_map: &ChannelMap) {
+    let mut map = channel_map.write().await;
+    map.entry(current_channel).or_default().push(client);
+}
+
+async fn remove_from_channel(current_channel: &String, client: &Arc<Mutex<TcpStream>>, channel_map: &ChannelMap) {
+    let mut map = channel_map.write().await;
+    if let Some(clients) = map.get_mut(current_channel) {
+        clients.retain(|c| !Arc::ptr_eq(c, client));
+    }
+}
+
+async fn broadcast_message(current_channel: &String, message: &MessageData, channel_map: &ChannelMap) {
+    let map = channel_map.read().await;
+    if let Some(clients) = map.get(current_channel) {
+        let json_data = format!("JSON:{}\n", serde_json::to_string(message).unwrap());
+        for client in clients {
+            let mut locked_client = client.lock().await;
+            let _ = locked_client.write_all(json_data.as_bytes()).await;
+        }
+    }
+}
+
 
