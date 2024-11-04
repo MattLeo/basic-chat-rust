@@ -55,12 +55,17 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, _channel_db: Arc<Db>) -> Result<()> {
+async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, channel_db: Arc<Db>) -> Result<()> {
     let mut buffer = [0u8;1024];
     let shared_socket = Arc::new(Mutex::new(socket));
     
     let user = auth_user(user_db, Arc::clone(&shared_socket)).await?;
     let mut current_channel = "general".to_string();
+    {
+        let mut locked_socket = shared_socket.lock().await;
+        locked_socket.write_all(format!("Joining channel: {}...\n", current_channel).as_bytes()).await?;
+    };
+    let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
 
     loop {
         let bytes = {
@@ -111,14 +116,16 @@ async fn manage_connection(socket: TcpStream, user_db: Arc<Db>, _channel_db: Arc
             }
         } else {
             let timestamp = chrono::Utc::now();
-            let mut message: Vec<u8> = Vec::new();
-
-            message.extend_from_slice(&buffer[..bytes]);
             let message_data = MessageData {
                 timestamp,
                 username: user.username.clone(),
                 message: input.as_bytes().to_vec(),
             };
+            let serialized_message = serde_json::to_vec(&message_data)?;
+            let message_key = format!("{}:{}:{}", current_channel, timestamp, user.uuid.clone());
+            channel_db.insert(message_key, serialized_message)?;
+            let _ = channel_db.flush()?;
+
             let json_data = format!("{}{}{}", "JSON:" ,serde_json::to_string(&message_data)?, "\n");
             let mut locked_socket = shared_socket.lock().await;
             locked_socket.write_all(json_data.as_bytes()).await?;
@@ -280,5 +287,25 @@ async fn server_command_handler(user_db: Arc<Db>, _channel_db: Arc<Db>) {
             }
         }
     }
+}
+
+async fn display_channel_history(current_channel: String, channel_db: Arc<Db>, shared_socket: Arc<Mutex<TcpStream>>) -> Result<()> {
+    let prefix = format!("{}:", current_channel);
+    let mut messages= Vec::new();
+    for item in channel_db.scan_prefix(prefix.as_bytes()) {
+        let (_, message_bytes) = item?;
+        let message: MessageData = serde_json::from_slice(&message_bytes)?;
+        messages.push(message);
+    }
+
+    messages.sort_by_key(|msg| msg.timestamp);
+
+    for message in messages {
+        let json_data = format!("{}{}{}", "JSON:" ,serde_json::to_string(&message)?, "\n");
+        let mut locked_socket = shared_socket.lock().await;
+        locked_socket.write_all(json_data.as_bytes()).await?;
+    }
+    
+    Ok(())
 }
 
