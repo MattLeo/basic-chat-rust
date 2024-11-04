@@ -8,7 +8,7 @@ An open-source chat service built from Rust and employing a modern and clean UI.
 [] modern UI (possibly web-based display)<br>
 [] cross-platform support for all desktop and mobile devices (or at least most)<br>
 [] Group chat (temporary rooms created by users)<br>
-[] User sign-up and login<br>
+[x] User sign-up and login<br>
 [] Role-base user permissions<br>
 [] Channel modes and permissions<br>
 [] Private Messaging between users<br>
