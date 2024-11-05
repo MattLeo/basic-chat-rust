@@ -11,7 +11,7 @@ An open-source chat service built from Rust and employing a modern and clean UI.
 [x] User sign-up and login<br>
 [] Role-based user permissions<br>
 [] Channel modes and permissions<br>
-[] Private Messaging between users<br>
+[x] Private Messaging between users<br>
 [] user mentions and message highlighting<br>
 [] the ability to block or ignore users<br>
 [] server bans and server muting functionality<br>

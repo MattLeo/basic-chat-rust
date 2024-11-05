@@ -1,17 +1,16 @@
+use anyhow::Result;
+use chrono::{DateTime, Local, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use anyhow::Result;
 use tokio::sync::mpsc;
-use chrono::{DateTime, Local, Utc};
-use serde::{Serialize, Deserialize};
-use serde_json;
-
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MessageData {
-   timestamp: DateTime<Utc>,
-   username: String,
-   message: Vec<u8>,
+    timestamp: DateTime<Utc>,
+    username: String,
+    message: Vec<u8>,
 }
 
 #[tokio::main]
@@ -63,8 +62,23 @@ async fn main() -> Result<()> {
                 //println!("Raw data received from server: {:?}", line);
                 if line.starts_with("JSON:") {
                     if let Ok(json_data) = serde_json::from_str::<MessageData>(&line[5..]) {
-                        let local_time = json_data.timestamp.with_timezone(&Local).format("%H:%M:%S");
-                        print!("[{}]{}: {}", local_time, json_data.username, String::from_utf8_lossy(&json_data.message));
+                        let local_time =
+                            json_data.timestamp.with_timezone(&Local).format("%H:%M:%S");
+                        print!("[{}]{}: {}",
+                            local_time,
+                            json_data.username,
+                            String::from_utf8_lossy(&json_data.message)
+                        );
+                    }
+                } else if line.starts_with("PM:") {
+                    if let Ok(json_data) = serde_json::from_str::<MessageData>(&line[3..]) {
+                        let local_time =
+                            json_data.timestamp.with_timezone(&Local).format("%H:%M:%S");
+                        print!("[{}] Whisper from {}: {}",
+                            local_time,
+                            json_data.username,
+                            String::from_utf8_lossy(&json_data.message)
+                        );
                     }
                 } else {
                     println!("{}", line.trim());

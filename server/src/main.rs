@@ -26,6 +26,7 @@ struct UserAccount {
 }
 
 type ChannelMap = Arc<RwLock<HashMap<String, Vec<Arc<Mutex<TcpStream>>>>>>;
+type UserMap = Arc<RwLock<HashMap<String, Arc<Mutex<TcpStream>>>>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,6 +36,7 @@ async fn main() -> Result<()> {
     let user_db = open_db("user_db")?;
     let channel_db = open_db("channel_db")?;
     let channel_map: ChannelMap = Arc::new(RwLock::new(HashMap::new()));
+    let user_map: UserMap = Arc::new(RwLock::new(HashMap::new()));
     let listener = TcpListener::bind(format!("{}:{}", ip, port))
         .await
         .expect("Failed to bind to address");
@@ -53,8 +55,11 @@ async fn main() -> Result<()> {
         let user_db = Arc::clone(&user_db);
         let channel_db = Arc::clone(&channel_db);
         let channel_map = Arc::clone(&channel_map);
+        let user_map = Arc::clone(&user_map);
         tokio::spawn(async move {
-            if let Err(e) = manage_connection(socket, user_db, channel_db, channel_map).await {
+            if let Err(e) =
+                manage_connection(socket, user_db, channel_db, channel_map, user_map).await
+            {
                 eprint!("Connection error received: {}", e);
             }
         });
@@ -66,11 +71,13 @@ async fn manage_connection(
     user_db: Arc<Db>,
     channel_db: Arc<Db>,
     channel_map: ChannelMap,
+    user_map: UserMap,
 ) -> Result<()> {
     let mut buffer = [0u8; 1024];
     let shared_socket = Arc::new(Mutex::new(socket));
 
     let user = auth_user(user_db, Arc::clone(&shared_socket)).await?;
+    add_to_usermap(user.username.clone(), Arc::clone(&shared_socket), &user_map).await;
     let mut current_channel = "general".to_string();
     {
         let mut locked_socket = shared_socket.lock().await;
@@ -98,6 +105,7 @@ async fn manage_connection(
         };
         if bytes == 0 {
             println!("Client has disconnected");
+            remove_from_usermap(&user.username.clone(), &user_map).await;
             return Ok(());
         }
 
@@ -161,6 +169,36 @@ async fn manage_connection(
                             Arc::clone(&shared_socket),
                         )
                         .await;
+                    }
+                }
+                "/whisper" => {
+                    if let Some(argument) = argument {
+                        let mut msg_parts = argument.trim().splitn(2, ' ');
+                        let target_user = msg_parts.next().unwrap();
+                        let message_text = msg_parts.next();
+
+                        if target_user == user.username {
+                            let mut locked_socket = shared_socket.lock().await;
+                            locked_socket.write(b"Cannot send a private message to yourself\n").await?;
+                        } else if let Some(message_text) = message_text {
+                            let users = user_map.read().await;
+                            if let Some(target_socket) = users.get(target_user) {
+                                let message_data = MessageData {
+                                    timestamp: Utc::now(),
+                                    username: user.username.clone(),
+                                    message: message_text.as_bytes().to_vec(),
+                                };
+                                let json_data = format!("PM:{}\n", serde_json::to_string(&message_data).unwrap());
+                                let mut locked_target_socket = target_socket.lock().await;
+                                locked_target_socket.write_all(json_data.as_bytes()).await?;
+                            }
+                        } else {
+                            let mut locked_socket = shared_socket.lock().await;
+                            locked_socket.write_all(b"Unable to find whisper target\n").await?;
+                        }
+                    } else {
+                        let mut locked_socket = shared_socket.lock().await;
+                        locked_socket.write_all(b"Usage: /whisper <target user> <message>\n").await?;
                     }
                 }
                 _ => {
@@ -461,4 +499,14 @@ async fn broadcast_message(
             let _ = locked_client.write_all(json_data.as_bytes()).await;
         }
     }
+}
+
+async fn add_to_usermap(username: String, client: Arc<Mutex<TcpStream>>, user_map: &UserMap) {
+    let mut map = user_map.write().await;
+    map.insert(username, client);
+}
+
+async fn remove_from_usermap(username: &String, user_map: &UserMap) {
+    let mut map = user_map.write().await;
+    map.remove(username);
 }
