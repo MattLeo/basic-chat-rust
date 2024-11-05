@@ -1,21 +1,20 @@
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader, AsyncBufReadExt};
+use anyhow::Result;
+use bcrypt::{hash, verify, DEFAULT_COST};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sled::Db;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
-use sled::Db;
-use std::sync::Arc;
-use std::collections::HashMap;
 use uuid::Uuid;
-use bcrypt::{hash, verify, DEFAULT_COST};
-
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MessageData {
-   timestamp: DateTime<Utc>,
-   username: String,
-   message: Vec<u8>,
+    timestamp: DateTime<Utc>,
+    username: String,
+    message: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -36,17 +35,19 @@ async fn main() -> Result<()> {
     let user_db = open_db("user_db")?;
     let channel_db = open_db("channel_db")?;
     let channel_map: ChannelMap = Arc::new(RwLock::new(HashMap::new()));
-    let listener = TcpListener::bind(format!("{}:{}", ip, port)).await.expect("Failed to bind to address");
+    let listener = TcpListener::bind(format!("{}:{}", ip, port))
+        .await
+        .expect("Failed to bind to address");
     println!("Server listening on {}:{}", ip, port);
-
 
     let user_db_clone = Arc::clone(&user_db);
     let channel_db_clone = Arc::clone(&channel_db);
+    let channel_map_clone = Arc::clone(&channel_map);
     tokio::spawn(async move {
-        server_command_handler(user_db_clone, channel_db_clone).await;
+        server_command_handler(user_db_clone, channel_db_clone, channel_map_clone).await;
     });
 
-    loop{
+    loop {
         let (socket, addr) = listener.accept().await?;
         println!("New connection from: {}", addr);
         let user_db = Arc::clone(&user_db);
@@ -61,22 +62,34 @@ async fn main() -> Result<()> {
 }
 
 async fn manage_connection(
-        socket: TcpStream, 
-        user_db: Arc<Db>, 
-        channel_db: Arc<Db>, 
-        channel_map: ChannelMap,
-    ) -> Result<()> {
-    let mut buffer = [0u8;1024];
+    socket: TcpStream,
+    user_db: Arc<Db>,
+    channel_db: Arc<Db>,
+    channel_map: ChannelMap,
+) -> Result<()> {
+    let mut buffer = [0u8; 1024];
     let shared_socket = Arc::new(Mutex::new(socket));
-    
+
     let user = auth_user(user_db, Arc::clone(&shared_socket)).await?;
     let mut current_channel = "general".to_string();
     {
         let mut locked_socket = shared_socket.lock().await;
-        locked_socket.write_all(format!("Joining channel: {}...\n", current_channel).as_bytes()).await?;
+        locked_socket
+            .write_all(format!("Joining channel: {}...\n", current_channel).as_bytes())
+            .await?;
     };
-    add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
-    let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
+    add_to_channel(
+        current_channel.clone(),
+        Arc::clone(&shared_socket),
+        &channel_map,
+    )
+    .await;
+    let _ = display_channel_history(
+        current_channel.clone(),
+        Arc::clone(&channel_db),
+        Arc::clone(&shared_socket),
+    )
+    .await;
 
     loop {
         let bytes = {
@@ -100,10 +113,20 @@ async fn manage_connection(
                         remove_from_channel(&current_channel, &shared_socket, &channel_map).await;
                         current_channel = channel_name.to_string();
                         let response = format!("Joined channel: {}\n", current_channel);
-                        add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
+                        add_to_channel(
+                            current_channel.clone(),
+                            Arc::clone(&shared_socket),
+                            &channel_map,
+                        )
+                        .await;
                         let mut locked_socket = shared_socket.lock().await;
                         locked_socket.write_all(response.as_bytes()).await?;
-                        let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
+                        let _ = display_channel_history(
+                            current_channel.clone(),
+                            Arc::clone(&channel_db),
+                            Arc::clone(&shared_socket),
+                        )
+                        .await;
                     } else {
                         let error = "Usage: /join <channel>\n";
                         let mut locked_socket = shared_socket.lock().await;
@@ -112,39 +135,35 @@ async fn manage_connection(
                 }
                 "/leave" => {
                     if current_channel == "general" {
-                        let response = format!("Cannot leave the general channel. Use /join to select new channel.");
+                        let response = format!(
+                            "Cannot leave the general channel. Use /join to select new channel."
+                        );
                         let mut locked_socket = shared_socket.lock().await;
                         locked_socket.write_all(response.as_bytes()).await?;
                     } else {
-                        let response = format!("You have left {}. Joining general channel..", current_channel);
+                        let response = format!(
+                            "You have left {}. Joining general channel..",
+                            current_channel
+                        );
                         remove_from_channel(&current_channel, &shared_socket, &channel_map).await;
                         current_channel = "general".to_string();
-                        add_to_channel(current_channel.clone(), Arc::clone(&shared_socket), &channel_map).await;
+                        add_to_channel(
+                            current_channel.clone(),
+                            Arc::clone(&shared_socket),
+                            &channel_map,
+                        )
+                        .await;
                         let mut locked_socket = shared_socket.lock().await;
                         locked_socket.write_all(response.as_bytes()).await?;
-                        let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
+                        let _ = display_channel_history(
+                            current_channel.clone(),
+                            Arc::clone(&channel_db),
+                            Arc::clone(&shared_socket),
+                        )
+                        .await;
                     }
                 }
-                "/broadcast" => {
-                    let message = argument.unwrap_or_default().to_string();
-                    if message.is_empty() {
-                        println!("No broadcast message provided. Usage: /broadcast <message>");
-                    }
-                    let message_data = MessageData {
-                        timestamp: Utc::now(),
-                        username: "Server Message".to_string(),
-                        message: message.as_bytes().to_vec(),
-                    };
-                    let json_data = format!("JSON:{}\n", serde_json::to_string(&message_data).unwrap());
-                    let map = channel_map.read().await;
-                    for clients in map.values() {
-                        for client in clients {
-                            let mut locked_socket = client.lock().await;
-                            locked_socket.write_all(json_data.as_bytes()).await?;
-                        }
-                    }
-                }
-                _=> {
+                _ => {
                     let error = format!("Unknown command: {}", command);
                     let mut locked_socket = shared_socket.lock().await;
                     locked_socket.write_all(error.as_bytes()).await?;
@@ -166,7 +185,6 @@ async fn manage_connection(
         }
     }
 }
-
 
 fn open_db(db_name: &str) -> Result<Arc<Db>> {
     let db = sled::open(db_name)?;
@@ -208,7 +226,9 @@ async fn auth_user(user_db: Arc<Db>, shared_socket: Arc<Mutex<TcpStream>>) -> Re
     };
     if verify(&password, &user.pass_hash)? {
         let mut locked_socket = shared_socket.lock().await;
-        locked_socket.write_all(b"Authentication successful\n").await?;
+        locked_socket
+            .write_all(b"Authentication successful\n")
+            .await?;
         Ok(user)
     } else {
         let mut locked_socket = shared_socket.lock().await;
@@ -217,14 +237,20 @@ async fn auth_user(user_db: Arc<Db>, shared_socket: Arc<Mutex<TcpStream>>) -> Re
     }
 }
 
-async fn register_user(username: String, shared_socket: Arc<Mutex<TcpStream>>, user_db: Arc<Db>) -> Result<UserAccount> {
+async fn register_user(
+    username: String,
+    shared_socket: Arc<Mutex<TcpStream>>,
+    user_db: Arc<Db>,
+) -> Result<UserAccount> {
     let mut buffer = [0u8; 1024];
     {
         let mut locked_socket = shared_socket.lock().await;
-        locked_socket.write_all(b"Username not found. Would you like to register this username? (Y/N)\n").await?;
+        locked_socket
+            .write_all(b"Username not found. Would you like to register this username? (Y/N)\n")
+            .await?;
     };
     let response = {
-        let bytes =  {
+        let bytes = {
             let mut locked_socket = shared_socket.lock().await;
             locked_socket.read(&mut buffer).await?
         };
@@ -234,7 +260,9 @@ async fn register_user(username: String, shared_socket: Arc<Mutex<TcpStream>>, u
         "Y" | "y" => {
             {
                 let mut locked_socket = shared_socket.lock().await;
-                locked_socket.write_all(b"Please enter new password:\n").await?;
+                locked_socket
+                    .write_all(b"Please enter new password:\n")
+                    .await?;
             };
             let password = {
                 let bytes = {
@@ -243,89 +271,146 @@ async fn register_user(username: String, shared_socket: Arc<Mutex<TcpStream>>, u
                 };
                 String::from_utf8_lossy(&buffer[..bytes]).trim().to_string()
             };
-            let pass_hash = hash(password, DEFAULT_COST).expect("Hashing function returned an error");
+            let pass_hash =
+                hash(password, DEFAULT_COST).expect("Hashing function returned an error");
             let user = UserAccount {
                 username,
                 pass_hash,
                 uuid: Uuid::new_v4().to_string(),
                 server_role: "user".to_string(),
             };
-            let user_bytes = serde_json::to_vec(&user)
-                .expect("Error while serializing user data");
-            user_db.insert(user.username.as_bytes(), user_bytes).expect("Database insert error");
+            let user_bytes = serde_json::to_vec(&user).expect("Error while serializing user data");
+            user_db
+                .insert(user.username.as_bytes(), user_bytes)
+                .expect("Database insert error");
             user_db.flush()?;
             {
                 let mut locked_socket = shared_socket.lock().await;
-                locked_socket.write_all(b"User account created successfully").await?;
+                locked_socket
+                    .write_all(b"User account created successfully")
+                    .await?;
             };
             Ok(user)
         }
         "N" | "n" => {
             let mut locked_socket = shared_socket.lock().await;
-            locked_socket.write_all(b"Authentication cancelled. Closing connection..").await?;
+            locked_socket
+                .write_all(b"Authentication cancelled. Closing connection..")
+                .await?;
             anyhow::bail!("Authentication cancelled by user");
         }
-        _=> {
+        _ => {
             let mut locked_socket = shared_socket.lock().await;
-            locked_socket.write_all(b"Invalid response received").await?;
+            locked_socket
+                .write_all(b"Invalid response received")
+                .await?;
             anyhow::bail!("Invalid response received from user during authentication");
         }
     }
 }
 
-async fn server_command_handler(user_db: Arc<Db>, _channel_db: Arc<Db>) {
+async fn server_command_handler(user_db: Arc<Db>, _channel_db: Arc<Db>, channel_map: ChannelMap) {
     let mut reader = BufReader::new(io::stdin()).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {
-        let command = line.trim();
+        if line.starts_with('/') {
+            let mut parts = line.trim().splitn(2, ' ');
+            let command = parts.next().unwrap();
+            let argument = parts.next();
 
-        match command {
-            "/add_user" => {
-                println!("Enter username:");
-                let username = reader.next_line().await.expect("Failed to read username")
-                    .unwrap_or_default().trim().to_string();
+            match command {
+                "/add_user" => {
+                    println!("Enter username:");
+                    let username = reader
+                        .next_line()
+                        .await
+                        .expect("Failed to read username")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
 
-                match user_db.get(username.as_bytes()).expect("Failed to access user database") {
-                    Some(_) => {
-                        println!("Username already exist");
-                    }
-                    None => {
-                        println!("Enter password:");
-                        let password = reader.next_line().await.expect("Failed to read password")
-                            .unwrap_or_default().trim().to_string();
+                    match user_db
+                        .get(username.as_bytes())
+                        .expect("Failed to access user database")
+                    {
+                        Some(_) => {
+                            println!("Username already exist");
+                        }
+                        None => {
+                            println!("Enter password:");
+                            let password = reader
+                                .next_line()
+                                .await
+                                .expect("Failed to read password")
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
 
-                        println!("Enter user role:");
-                        let role = reader.next_line().await.expect("Invalid role provided")
-                        .unwrap_or_default().trim().to_string();
+                            println!("Enter user role:");
+                            let role = reader
+                                .next_line()
+                                .await
+                                .expect("Invalid role provided")
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
 
-                        let uuid = Uuid::new_v4();
-                        let pass_hash = hash(password, DEFAULT_COST)
-                            .expect("Hashing function returned an error");
+                            let uuid = Uuid::new_v4();
+                            let pass_hash = hash(password, DEFAULT_COST)
+                                .expect("Hashing function returned an error");
 
-                        let user = UserAccount {
-                            username: username.clone(),
-                            pass_hash,
-                            uuid: uuid.to_string(),
-                            server_role: role,
-                        };
-                        let user_bytes = serde_json::to_vec(&user)
-                            .expect("Error while serializing user data");
-                        user_db.insert(user.username.as_bytes(), user_bytes).expect("Database insert error");
-                        println!("User '{}' created successfully", username.clone());
-                        let _ = user_db.flush();
+                            let user = UserAccount {
+                                username: username.clone(),
+                                pass_hash,
+                                uuid: uuid.to_string(),
+                                server_role: role,
+                            };
+                            let user_bytes = serde_json::to_vec(&user)
+                                .expect("Error while serializing user data");
+                            user_db
+                                .insert(user.username.as_bytes(), user_bytes)
+                                .expect("Database insert error");
+                            println!("User '{}' created successfully", username.clone());
+                            let _ = user_db.flush();
+                        }
                     }
                 }
-            }
-            _=> {
-                println!("Unknown command: {}", command);
+                "/broadcast" => {
+                    let message = argument.unwrap_or_default().to_string();
+                    if message.is_empty() {
+                        println!("No broadcast message provided. Usage: /broadcast <message>");
+                    }
+                    let message_data = MessageData {
+                        timestamp: Utc::now(),
+                        username: "Server Message".to_string(),
+                        message: message.as_bytes().to_vec(),
+                    };
+                    let json_data =
+                        format!("JSON:{}\n", serde_json::to_string(&message_data).unwrap());
+                    let map = channel_map.read().await;
+                    for clients in map.values() {
+                        for client in clients {
+                            let mut locked_socket = client.lock().await;
+                            let _ = locked_socket.write_all(json_data.as_bytes()).await;
+                        }
+                    }
+                }
+
+                _ => {
+                    println!("Unknown command: {}", command);
+                }
             }
         }
     }
 }
 
-async fn display_channel_history(current_channel: String, channel_db: Arc<Db>, shared_socket: Arc<Mutex<TcpStream>>) -> Result<()> {
+async fn display_channel_history(
+    current_channel: String,
+    channel_db: Arc<Db>,
+    shared_socket: Arc<Mutex<TcpStream>>,
+) -> Result<()> {
     let prefix = format!("{}:", current_channel);
-    let mut messages= Vec::new();
+    let mut messages = Vec::new();
     for item in channel_db.scan_prefix(prefix.as_bytes()) {
         let (_, message_bytes) = item?;
         let message: MessageData = serde_json::from_slice(&message_bytes)?;
@@ -335,7 +420,7 @@ async fn display_channel_history(current_channel: String, channel_db: Arc<Db>, s
     messages.sort_by_key(|msg| msg.timestamp);
 
     for message in messages {
-        let json_data = format!("{}{}{}", "JSON:" ,serde_json::to_string(&message)?, "\n");
+        let json_data = format!("{}{}{}", "JSON:", serde_json::to_string(&message)?, "\n");
         let mut locked_socket = shared_socket.lock().await;
         locked_socket.write_all(json_data.as_bytes()).await?;
     }
@@ -343,19 +428,31 @@ async fn display_channel_history(current_channel: String, channel_db: Arc<Db>, s
     Ok(())
 }
 
-async fn add_to_channel(current_channel: String, client: Arc<Mutex<TcpStream>>, channel_map: &ChannelMap) {
+async fn add_to_channel(
+    current_channel: String,
+    client: Arc<Mutex<TcpStream>>,
+    channel_map: &ChannelMap,
+) {
     let mut map = channel_map.write().await;
     map.entry(current_channel).or_default().push(client);
 }
 
-async fn remove_from_channel(current_channel: &String, client: &Arc<Mutex<TcpStream>>, channel_map: &ChannelMap) {
+async fn remove_from_channel(
+    current_channel: &String,
+    client: &Arc<Mutex<TcpStream>>,
+    channel_map: &ChannelMap,
+) {
     let mut map = channel_map.write().await;
     if let Some(clients) = map.get_mut(current_channel) {
         clients.retain(|c| !Arc::ptr_eq(c, client));
     }
 }
 
-async fn broadcast_message(current_channel: &String, message: &MessageData, channel_map: &ChannelMap) {
+async fn broadcast_message(
+    current_channel: &String,
+    message: &MessageData,
+    channel_map: &ChannelMap,
+) {
     let map = channel_map.read().await;
     if let Some(clients) = map.get(current_channel) {
         let json_data = format!("JSON:{}\n", serde_json::to_string(message).unwrap());
@@ -365,5 +462,3 @@ async fn broadcast_message(current_channel: &String, message: &MessageData, chan
         }
     }
 }
-
-
