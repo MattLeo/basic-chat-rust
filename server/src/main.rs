@@ -125,6 +125,25 @@ async fn manage_connection(
                         let _ = display_channel_history(current_channel.clone(), Arc::clone(&channel_db), Arc::clone(&shared_socket)).await;
                     }
                 }
+                "/broadcast" => {
+                    let message = argument.unwrap_or_default().to_string();
+                    if message.is_empty() {
+                        println!("No broadcast message provided. Usage: /broadcast <message>");
+                    }
+                    let message_data = MessageData {
+                        timestamp: Utc::now(),
+                        username: "Server Message".to_string(),
+                        message: message.as_bytes().to_vec(),
+                    };
+                    let json_data = format!("JSON:{}\n", serde_json::to_string(&message_data).unwrap());
+                    let map = channel_map.read().await;
+                    for clients in map.values() {
+                        for client in clients {
+                            let mut locked_socket = client.lock().await;
+                            locked_socket.write_all(json_data.as_bytes()).await?;
+                        }
+                    }
+                }
                 _=> {
                     let error = format!("Unknown command: {}", command);
                     let mut locked_socket = shared_socket.lock().await;
